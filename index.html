@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Конструктор торта</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #fff);
+    --text: var(--tg-theme-text-color, #222);
+    --hint: var(--tg-theme-hint-color, #8a8a8a);
+    --card: var(--tg-theme-seconadary-bg-color, #f4f1ee);
+    --accent: var(--tg-theme-button-color, #d9577b);
+    --accent-text: var(--tg-theme-button-text-color, #fff);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.35 -apple-system, "Segoe UI", Roboto, sans-serif; padding-bottom: 96px; }
+  .preview { position: sticky; top: 0; z-index: 5; background: var(--card); padding: 8px 0 4px; text-align: center; }
+  #cake { height: 240px; touch-action: pan-y; cursor: grab; }
+  #cake canvas { display: block; }
+  .wrap { padding: 0 16px; }
+  h2 { font-size: 15px; margin: 18px 0 8px; color: var(--hint); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 2px solid transparent; background: var(--card); color: var(--text); border-radius: 999px; padding: 8px 14px; font: inherit; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .chip.on { border-color: var(--accent); }
+  .dot { width: 16px; height: 16px; border-radius: 50%; border: 1px solid rgba(0,0,0,.2); flex: none; }
+  input[type=text], textarea { width: 100%; border: 2px solid transparent; background: var(--card); color: var(--text); border-radius: 12px; padding: 10px 12px; font: inherit; }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { resize: none; height: 70px; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg); box-shadow: 0 -2px 12px rgba(0,0,0,.08); }
+  .bar small { display: block; color: var(--hint); font-size: 13px; margin-bottom: 6px; text-align: center; }
+  .go { width: 100%; border: 0; border-radius: 14px; padding: 14px; font: 600 17px inherit; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="preview">
+<div id="cake" aria-label="3D-предпросмотр торта"></div>
+</div>
+
+<div class="wrap" id="form"></div>
+
+<div class="bar">
+  <small id="summary"></small>
+  <button class="go" id="send">Заказать этот торт</button>
+</div>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+// ---------- Что можно выбрать (правьте под свою кондитерскую) ----------
+const OPTIONS = {
+  tiers:   { title: 'Ярусы',   type: 'one', items: [{n:'1 ярус', v:1}, {n:'2 яруса', v:2}] },
+  weight:  { title: 'Вес',     type: 'one', items: [{n:'1 кг'}, {n:'1,5 кг'}, {n:'2 кг'}, {n:'3 кг'}] },
+  sponge:  { title: 'Бисквит', type: 'one', items: [
+    {n:'Шоколадный', c:'#5a3320'}, {n:'Ванильный', c:'#f0d9a0'}, {n:'Медовый', c:'#c98d3f'}, {n:'Свекольный (красный)', c:'#8e2630'} ] },
+  filling: { title: 'Начинка', type: 'one', items: [
+    {n:'Солёная карамель с арахисом', c:'#c8802a'}, {n:'Вишнёвый компот', c:'#8a1c2b'}, {n:'Черничное конфи', c:'#4b3a7a'},
+    {n:'«Молочно» шоколадный крем', c:'#8a5333'}, {n:'Ванильный ганаш', c:'#fff1cf'} ] },
+  coating: { title: 'Покрытие', type: 'one', items: [
+    {n:'Открытые слои', c:null}, {n:'Белый крем', c:'#fbf6ee'}, {n:'Шоколадная глазурь', c:'#5b3322'}, {n:'Розовый крем', c:'#f3b9c6'},
+    {n:'Голубой крем', c:'#bcd8ee'}, {n:'Лавандовый крем', c:'#cbb6e6'}, {n:'Мятный крем', c:'#bfe3cf'} ] },
+  decor:   { title: 'Декор (можно несколько)', type: 'many', items: [
+    {n:'Ягоды'}, {n:'Грецкий орех'}, {n:'Тёртое какао'}, {n:'Лаванда'}, {n:'Шоколадные капли'} ] },
+};
+const state = { tiers: 1, weight: '1 кг', sponge: 'Шоколадный', filling: 'Вишнёвый компот', coating: 'Белый крем', decor: ['Ягоды'], text: '', comment: '' };
+const key = k => k === 'tiers' ? 'tiers' : k;
+
+// ---------- Форма ----------
+const form = document.getElementById('form');
+function buildForm() {
+  let html = '';
+  for (const [k, o] of Object.entries(OPTIONS)) {
+    html += `<h2>${o.title}</h2><div class="chips" data-k="${k}">` + o.items.map(it => {
+      const val = it.v ?? it.n;
+      const on = o.type === 'many' ? state[k].includes(val) : state[k] === val;
+      const dot = it.c !== undefined ? `<span class="dot" style="background:${it.c || 'repeating-linear-gradient(45deg,#c98d3f 0 4px,#fff1cf 4px 8px)'}"></span>` : '';
+      return `<button class="chip${on ? ' on' : ''}" data-v="${val}">${dot}${it.n}</button>`;
+    }).join('') + '</div>';
+  }
+  html += `<h2>Надпись на торте</h2><input type="text" id="text" maxlength="25" placeholder="Например: С днём рождения, Аня!" value="${state.text}">
+           <h2>Пожелания</h2><textarea id="comment" maxlength="300" placeholder="Что ещё нам нужно знать?">${state.comment}</textarea>`;
+  form.innerHTML = html;
+}
+form.addEventListener('click', e => {
+  const chip = e.target.closest('.chip'); if (!chip) return;
+  const k = chip.parentElement.dataset.k, o = OPTIONS[k];
+  let v = chip.dataset.v; if (k === 'tiers') v = +v;
+  if (o.type === 'many') {
+    const i = state[k].indexOf(v); i < 0 ? state[k].push(v) : state[k].splice(i, 1);
+  } else state[k] = v;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  syncChips(); render();
+});
+form.addEventListener('input', e => {
+  if (e.target.id === 'text') state.text = e.target.value;
+  if (e.target.id === 'comment') state.comment = e.target.value;
+  render();
+});
+function syncChips() {
+  form.querySelectorAll('.chips').forEach(box => {
+    const k = box.dataset.k;
+    box.querySelectorAll('.chip').forEach(ch => {
+      let v = ch.dataset.v; if (k === 'tiers') v = +v;
+      ch.classList.toggle('on', OPTIONS[k].type === 'many' ? state[k].includes(v) : state[k] === v);
+    });
+  });
+}
+
+// ---------- 3D-торт ----------
+const colorOf = (k, name) => (OPTIONS[k].items.find(i => i.n === name) || {}).c;
+const isDark = hex => { const n = parseInt(hex.slice(1), 16); return ((n >> 16) * .3 + ((n >> 8) & 255) * .6 + (n & 255) * .1) < 110; };
+
+const holder = document.getElementById('cake');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+holder.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(32, 1, .1, 50);
+camera.position.set(0, 3.0, 6.0); camera.lookAt(0, .75, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xf0e8de, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(3, 6, 4); scene.add(sun);
+const cake = new THREE.Group(); scene.add(cake);
+
+function resize() {
+  const w = holder.clientWidth, h = holder.clientHeight;
+  renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+// вращение: само + пальцем
+let drag = null, spin = .008;
+holder.addEventListener('pointerdown', e => { drag = e.clientX; holder.setPointerCapture(e.pointerId); holder.style.cursor = 'grabbing'; });
+holder.addEventListener('pointermove', e => { if (drag !== null) { cake.rotation.y += (e.clientX - drag) * .012; drag = e.clientX; } });
+const endDrag = () => { drag = null; holder.style.cursor = 'grab'; };
+holder.addEventListener('pointerup', endDrag); holder.addEventListener('pointercancel', endDrag);
+(function loop() { if (drag === null) cake.rotation.y += spin; renderer.render(scene, camera); requestAnimationFrame(loop); })();
+
+const mat = (c, rough = .7) => new THREE.MeshStandardMaterial({ color: c, roughness: rough });
+function cyl(r, h, y, material) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 64), material); m.position.y = y; return m;
+}
+function ring(r, y, tube, color) {
+  const m = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 12, 64), mat(color, .5));
+  m.rotation.x = Math.PI / 2; m.position.y = y; return m;
+}
+function textCanvas(text, w, h, bg, fg, fs) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  if (bg) { g.fillStyle = bg; g.fillRect(0, 0, w, h); }
+  g.fillStyle = fg; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = `italic ${fs}px "Segoe Script","Brush Script MT",cursive`;
+  g.fillText(text, w / 2, h / 2);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+
+function addTier(r, h, y0, sponge, filling, coat, text) {
+  if (coat) {
+    const side = mat(coat, .55), top = mat(coat, .5);
+    let sideMat = side;
+    if (text) {                                   // надпись на боку яруса
+      const W = 2048, ppu = W / (2 * Math.PI * r), H = Math.round(h * ppu);
+      const fs = Math.min(.36 * ppu, 700 / (text.length * .5));
+      sideMat = new THREE.MeshStandardMaterial({ roughness: .55, map: textCanvas(text, W, H, coat, isDark(coat) ? '#fff' : '#6a2a3c', fs) });
+    }
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 96), [sideMat, top, top]);
+    m.position.y = y0 + h / 2; m.rotation.y = Math.PI; cake.add(m);   // текст (u=.5) разворачиваем к зрителю
+    cake.add(ring(r, y0 + h, .045, coat), ring(r, y0 + .03, .05, coat));
+  } else {
+    const n = 3, fh = .08, sh = (h - fh * (n - 1)) / n;
+    for (let i = 0; i < n; i++) {
+      const y = y0 + i * (sh + fh);
+      cake.add(cyl(r, sh, y + sh / 2, mat(sponge, .9)));
+      if (i < n - 1) cake.add(cyl(r + .03, fh, y + sh + fh / 2, mat(filling, .35)));
+    }
+  }
+}
+
+function rand(seed) { let s = seed; return () => (s = (s * 9301 + 49297) % 233280) / 233280; }
+function addDecor(list, r, y) {
+  const rnd = rand(7), spot = (k = .7) => { const a = rnd() * 6.283, d = Math.sqrt(rnd()) * r * k; return [Math.cos(a) * d, Math.sin(a) * d]; };
+  if (list.includes('Тёртое какао')) for (let i = 0; i < 70; i++) { const [x, z] = spot(.9); const m = new THREE.Mesh(new THREE.SphereGeometry(.018, 6, 6), mat('#4a2a1b', 1)); m.position.set(x, y + .01, z); cake.add(m); }
+  if (list.includes('Шоколадные капли')) for (let i = 0; i < 8; i++) { const [x, z] = spot(); const m = new THREE.Mesh(new THREE.ConeGeometry(.06, .13, 12), mat('#43251a', .4)); m.position.set(x, y + .065, z); cake.add(m); }
+  if (list.includes('Лаванда')) for (let i = 0; i < 5; i++) { const [x, z] = spot(.6); const st = cyl(.008, .3, y + .15, mat('#6b8f5a')); st.position.x = x; st.position.z = z; cake.add(st); for (let j = 0; j < 5; j++) { const b = new THREE.Mesh(new THREE.SphereGeometry(.028, 8, 8), mat('#8a63c4')); b.scale.y = 1.4; b.position.set(x + (j % 2 ? .02 : -.02), y + .12 + j * .045, z); cake.add(b); } }
+  if (list.includes('Грецкий орех')) for (let i = 0; i < 4; i++) { const [x, z] = spot(.65); const m = new THREE.Mesh(new THREE.SphereGeometry(.1, 12, 10), mat('#a8743f', .8)); m.scale.set(1.2, .8, 1); m.position.set(x, y + .07, z); m.rotation.y = rnd() * 3; cake.add(m); }
+  if (list.includes('Ягоды')) for (let i = 0; i < 7; i++) { const [x, z] = spot(.7); const m = new THREE.Mesh(new THREE.SphereGeometry(.085, 16, 12), mat(i % 2 ? '#d8283f' : '#3d3a8c', .35)); m.position.set(x, y + .08, z); cake.add(m); }
+}
+
+function render() {
+  cake.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  cake.clear();
+  const sponge = colorOf('sponge', state.sponge) || '#5a3320';
+  const filling = colorOf('filling', state.filling) || '#c8802a';
+  const coat = colorOf('coating', state.coating) || null;
+  const text = state.text.trim();
+  const k = { '1 кг': 1, '1,5 кг': 1.1, '2 кг': 1.2, '3 кг': 1.35 }[state.weight] || 1;
+  const R = 1.15 * k * (state.tiers === 2 ? 1 : .92);
+
+  const plate = cyl(R + .45, .07, .035, mat('#f4efe9', .3)); cake.add(plate);
+  const tiers = state.tiers === 2 ? [[R, .8], [R * .66, .7]] : [[R, 1.15]];
+  let y = .07;
+  tiers.forEach(([r, h], i) => {
+    const last = i === tiers.length - 1;
+    addTier(r, h, y, sponge, filling, coat, coat && last ? text : '');
+    y += h;
+    if (last) addDecor(state.decor, r, y);
+  });
+  if (text && !coat) {                             // у открытого торта надпись — на топпере
+    const card = new THREE.Mesh(new THREE.PlaneGeometry(1.5, .4), new THREE.MeshBasicMaterial({ map: textCanvas(text, 1024, 280, '#fff8ea', '#6a2a3c', Math.min(150, 900 / (text.length * .5))), side: THREE.DoubleSide }));
+    card.position.set(0, y + .75, 0); cake.add(card);
+    const stick = cyl(.012, .55, y + .27, mat('#c9a56a')); cake.add(stick);
+  }
+  document.getElementById('summary').textContent = `${state.tiers === 2 ? '2 яруса' : '1 ярус'}, ${state.weight} · ${state.sponge.toLowerCase()} · ${state.filling.toLowerCase()} · ${state.coating.toLowerCase()}`;
+}
+
+// ---------- Отправка в бота ----------
+document.getElementById('send').addEventListener('click', () => {
+  const payload = {
+    tiers: state.tiers, weight: state.weight, sponge: state.sponge, filling: state.filling,
+    coating: state.coating, decor: state.decor, text: state.text.trim(), comment: state.comment.trim(),
+  };
+  if (tg && tg.initData) tg.sendData(JSON.stringify(payload));   // окно закроется само
+  else alert('Вне Telegram заказ не отправить. Данные:\n' + JSON.stringify(payload, null, 2));
+});
+
+buildForm(); render();
+</script>
+</body>
+</html>
